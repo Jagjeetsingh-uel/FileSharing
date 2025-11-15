@@ -425,10 +425,29 @@
 
         async function sendSignal(toPeerId, data) {
             try {
+                // Firestore doesn't accept complex browser RTC objects (RTCIceCandidate, RTCSessionDescription)
+                // so sanitize any RTC objects to plain JSON before writing.
+                const sanitized = { ...data };
+                if (sanitized.ice) {
+                    try {
+                        // RTCIceCandidate has toJSON() in modern browsers
+                        sanitized.ice = typeof sanitized.ice.toJSON === 'function' ? sanitized.ice.toJSON() : JSON.parse(JSON.stringify(sanitized.ice));
+                    } catch (e) {
+                        sanitized.ice = JSON.parse(JSON.stringify(sanitized.ice));
+                    }
+                }
+                if (sanitized.sdp) {
+                    try {
+                        sanitized.sdp = typeof sanitized.sdp.toJSON === 'function' ? sanitized.sdp.toJSON() : JSON.parse(JSON.stringify(sanitized.sdp));
+                    } catch (e) {
+                        sanitized.sdp = JSON.parse(JSON.stringify(sanitized.sdp));
+                    }
+                }
+
                 const signalDoc = {
                     from: myPeerId,
                     timestamp: serverTimestamp(),
-                    ...data
+                    ...sanitized
                 };
                 // Path to the sub-collection 'incoming' under the *recipient's* document
                 const signalsRef = collection(db, SIGNALS_COLLECTION_BASE, toPeerId, SIGNALS_SUBCOLLECTION);
