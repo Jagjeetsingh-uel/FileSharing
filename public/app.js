@@ -23,7 +23,16 @@
   localStorage.setItem('fs:tempId', myId);
   myIdEl.textContent = myId;
 
-  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  // Try to open a signaling WebSocket to the same origin. If none exists (static hosting), fall back to manual mode.
+  let ws = null;
+  let signalingEnabled = false;
+  try{
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+    ws.addEventListener('open', ()=>{ signalingEnabled = true; createTempNote('Signaling server connected'); ws.send(JSON.stringify({type:'register', id: myId})); ws.send(JSON.stringify({type:'list'})); });
+    ws.addEventListener('error', ()=>{ signalingEnabled = false; createTempNote('No signaling server (serverless mode)'); });
+    ws.addEventListener('close', ()=>{ signalingEnabled = false; createTempNote('Signaling connection closed'); });
+  }catch(e){ signalingEnabled = false; ws = null; }
+
   const peers = {}; // id -> {pc, dc}
   const pendingChunkHeaders = {}; // peerId -> [{fileId,size}, ...]
 
@@ -55,19 +64,120 @@
     document.body.appendChild(n); setTimeout(()=>n.remove(), timeout);
   }
 
-  ws.addEventListener('message', async (ev)=>{
-    const data = JSON.parse(ev.data);
-    if (data.type === 'peers') {
-      renderPeerList(data.peers.filter(id=>id!==myId));
-      return;
-    }
+  // Manual (serverless) signaling helpers -------------------------------------------------
+  const createOfferBtn = document.getElementById('createOfferBtn');
+  const acceptOfferBtn = document.getElementById('acceptOfferBtn');
+  const manualOut = document.getElementById('manualOut');
+  const copyOut = document.getElementById('copyOut');
+  const pasteRemote = document.getElementById('pasteRemote');
 
-    if (data.type === 'signal') {
-      const { from, payload } = data;
-      await handleSignal(from, payload);
-      return;
-    }
+  function encodeSignal(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
+  function decodeSignal(str){ return JSON.parse(decodeURIComponent(escape(atob(str)))); }
+
+  function waitForIceGatheringComplete(pc, timeout = 4000){
+    return new Promise((resolve)=>{
+      if (pc.iceGatheringState === 'complete') return resolve();
+      function check(){ if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', check); resolve(); } }
+      pc.addEventListener('icegatheringstatechange', check);
+      // fallback timeout
+      setTimeout(()=>resolve(), timeout);
+    });
+  }
+
+  // Create an offer and show encoded string to copy/share
+  createOfferBtn && createOfferBtn.addEventListener('click', async ()=>{
+    try{
+      const pc = new RTCPeerConnection();
+      const dc = pc.createDataChannel('files');
+      setupDataChannel('manual:'+Date.now(), dc);
+      const id = 'manual-'+Date.now();
+      peers[id] = { pc, dc: null };
+      pc.ondatachannel = (ev)=> setupDataChannel(id, ev.channel);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGatheringComplete(pc);
+      const payload = { type: 'offer', sdp: pc.localDescription.sdp, from: myId };
+      manualOut.value = encodeSignal(payload);
+      createTempNote('Offer created — copy and send to remote');
+    }catch(e){ console.error(e); alert('Failed to create offer: '+e.message); }
   });
+
+  // Accept an incoming offer (paste into manualOut), create answer and show encoded answer
+  acceptOfferBtn && acceptOfferBtn.addEventListener('click', async ()=>{
+    const txt = manualOut.value.trim();
+    if (!txt) return alert('Paste the remote offer in the box first');
+    try{
+      const offer = decodeSignal(txt);
+      if (offer.type !== 'offer') return alert('Not an offer');
+      const pc = new RTCPeerConnection();
+      pc.ondatachannel = (ev)=> setupDataChannel(offer.from || ('manual-'+Date.now()), ev.channel);
+      peers[offer.from || ('manual-'+Date.now())] = { pc, dc: null };
+      await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIceGatheringComplete(pc);
+      const payload = { type: 'answer', sdp: pc.localDescription.sdp, from: myId };
+      manualOut.value = encodeSignal(payload);
+      createTempNote('Answer created — copy and send back to caller');
+    }catch(e){ console.error(e); alert('Failed to accept offer: '+e.message); }
+  });
+
+  // Copy output to clipboard
+  copyOut && copyOut.addEventListener('click', async ()=>{
+    try{ await navigator.clipboard.writeText(manualOut.value); createTempNote('Copied to clipboard'); }catch(e){ createTempNote('Copy failed — select & copy manually'); }
+  });
+
+  // Paste remote data from clipboard and finish (for caller paste answer, for callee paste offer)
+  pasteRemote && pasteRemote.addEventListener('click', async ()=>{
+    try{
+      const txt = await navigator.clipboard.readText();
+      if (!txt) return alert('Clipboard empty');
+      const data = decodeSignal(txt.trim());
+      if (data.type === 'answer'){
+        // caller: set remote description for the correct manual peer
+        const key = Object.keys(peers).find(k=>k.startsWith('manual-'));
+        if (!key) return alert('No manual offer in progress (create an offer first)');
+        const entry = peers[key];
+        await entry.pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+        createTempNote('Answer applied — connection should establish');
+      } else if (data.type === 'offer'){
+        // accept incoming offer and generate answer automatically
+        const pc = new RTCPeerConnection();
+        pc.ondatachannel = (ev)=> setupDataChannel(data.from || ('manual-'+Date.now()), ev.channel);
+        peers[data.from || ('manual-'+Date.now())] = { pc, dc: null };
+        await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await waitForIceGatheringComplete(pc);
+        const payload = { type: 'answer', sdp: pc.localDescription.sdp, from: myId };
+        manualOut.value = encodeSignal(payload);
+        createTempNote('Answer created — copy and send back to caller');
+      } else {
+        alert('Unsupported payload');
+      }
+    }catch(e){ console.error(e); alert('Paste failed: '+e.message); }
+  });
+
+  if (ws){
+    ws.addEventListener('message', async (ev)=>{
+      try{
+        const data = JSON.parse(ev.data);
+        if (data.type === 'peers') {
+          renderPeerList(data.peers.filter(id=>id!==myId));
+          return;
+        }
+
+        if (data.type === 'signal') {
+          const { from, payload } = data;
+          await handleSignal(from, payload);
+          return;
+        }
+      }catch(e){ /* ignore invalid messages */ }
+    });
+  } else {
+    // no WebSocket signaling available — manual mode only
+    createTempNote('Signaling server not found — manual copy/paste mode enabled');
+  }
 
   function renderPeerList(list){
     peerListEl.innerHTML='';
@@ -98,6 +208,11 @@
   });
 
   function sendSignal(to, payload){
+    if (!signalingEnabled || !ws || ws.readyState !== WebSocket.OPEN){
+      console.warn('Signaling not available — use manual mode');
+      createTempNote('Signaling not available — use manual copy/paste');
+      return;
+    }
     ws.send(JSON.stringify({type:'signal', to, from: myId, payload}));
   }
 

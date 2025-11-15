@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Local File Sharing</title>
+    <link rel="stylesheet" href="public/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 12a9 9 0 1018 0 9 9 0 10-18 0z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="brand-text">ShareLocal</div>
+        </div>
+
+        <div class="profile-card">
+          <div class="profile-label">Your Temporary ID</div>
+          <div class="profile-id" id="myId">—</div>
+          <div class="profile-actions">
+            <input id="remoteIdInput" maxlength="4" placeholder="peer id" />
+            <button id="connectBtn" class="btn-primary">Connect</button>
+          </div>
+
+          <div class="manual-panel">
+            <div class="panel-header" style="margin-top:10px">No-server Connect</div>
+            <div class="muted small">Use copy/paste to exchange connection data (works without signaling server)</div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button id="createOfferBtn" class="btn">Create Offer</button>
+              <button id="acceptOfferBtn" class="btn">Accept Offer</button>
+            </div>
+            <textarea id="manualOut" placeholder="Offer / Answer will appear here" rows="4" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;background:transparent;border:1px solid rgba(255,255,255,0.03);color:inherit"></textarea>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button id="copyOut" class="btn">Copy</button>
+              <button id="pasteRemote" class="btn">Paste Remote and Finish</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="peers-panel">
+          <div class="panel-header">Peers</div>
+          <div class="peer-controls">
+            <label class="small"><input type="checkbox" id="selectAllPeers" /> Select all</label>
+            <button id="refreshPeers" class="btn-ghost small">Refresh</button>
+          </div>
+          <div id="peerList" class="peer-grid"></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="main-head">
+          <h1>Send files instantly on your local network</h1>
+          <p class="muted">Pick files, select peers and share — progress shown per-file.</p>
+        </header>
+
+        <section class="drop-area" id="dropZone">
+          <div class="drop-content">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 7l4-4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 15v2a3 3 0 01-3 3H6a3 3 0 01-3-3v-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="drop-title">Drag & drop files here</div>
+            <div class="drop-sub">or <label class="browse-btn">browse<input id="fileInput" type="file" multiple /></label></div>
+            <div class="drop-note muted">Files will be sent directly using WebRTC DataChannels. Use Select all or check specific peers from the left.</div>
+          </div>
+        </section>
+
+        <div class="actions-row">
+          <div class="left-actions">
+            <button id="sendSelected" class="btn-primary">Send to Selected</button>
+            <button id="sendAll" class="btn">Send to All</button>
+          </div>
+          <div class="right-actions muted">Active transfers: <span id="transferCount">0</span></div>
+        </div>
+
+        <section id="transfers" class="transfers-area">
+          <h3>Transfers</h3>
+          <div id="activeTransfers" class="transfer-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="public/app.js"></script>
+  </body>
+</html>
