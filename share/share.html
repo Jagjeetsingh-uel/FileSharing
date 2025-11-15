@@ -13,11 +13,9 @@
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js"></script>
     <!-- Firebase SDK -->
-     
     <script type="module">
         // --- Firebase Imports ---
-          import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
-          
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
         import { 
             getAuth, 
             signInAnonymously, 
@@ -45,15 +43,14 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'p2p-share-default';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             // Fallback config for local testing (replace with your own)
-             apiKey: "AIzaSyCEqDSsMSXIjJKGpYddzSSRTstD-mMVEZ4",
-            authDomain: "p2psharing-cdf34.firebaseapp.com",
-            projectId: "p2psharing-cdf34",
-            storageBucket: "p2psharing-cdf34.firebasestorage.app",
-            messagingSenderId: "466892545264",
-            appId: "1:466892545264:web:9436e4befb5634db8d3635",
-            measurementId: "G-R3B5PK1GZM"
+            apiKey: "AIzaSyCEqDSsMSXIjJKGpYddzSSRTstD-mMVEZ4",
+  authDomain: "p2psharing-cdf34.firebaseapp.com",
+  projectId: "p2psharing-cdf34",
+  storageBucket: "p2psharing-cdf34.firebasestorage.app",
+  messagingSenderId: "466892545264",
+  appId: "1:466892545264:web:9436e4befb5634db8d3635",
+  measurementId: "G-R3B5PK1GZM"
         };
-
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // Firestore Paths
@@ -116,7 +113,7 @@
 
         async function initFirebase() {
             try {
-                const app = initializeApp(firebaseConfig);                
+                const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
@@ -456,9 +453,9 @@
                 console.log(`Connection state with ${peerId}: ${state}`);
                 
                 if (state === 'connected') {
-                    showStatus(`Connected to ${peerId}.`, "success");
+                    // showStatus(`Connected to ${peerId}.`, "success"); // <-- REMOVED: We'll show this when data channel is open
                     peerConnections[peerId] = pc; // Store only on success
-                    updatePeerCardUI(peerId, true);
+                    // updatePeerCardUI(peerId, true); // <-- REMOVED: Moved to setupDataChannel
                 } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
                     showStatus(`Disconnected from ${peerId}.`, "error");
                     disconnectFromPeer(peerId); // Full cleanup
@@ -510,10 +507,13 @@
             channel.onopen = () => {
                 console.log(`Data channel with ${peerId} is open.`);
                 dataChannels[peerId] = channel;
+                showStatus(`Connected to ${peerId}.`, "success"); // <-- MOVED HERE
+                updatePeerCardUI(peerId, true); // <-- MOVED HERE
             };
             
             channel.onclose = () => {
                 console.log(`Data channel with ${peerId} is closed.`);
+                updatePeerCardUI(peerId, false); // <-- ADDED: Update UI if channel closes
                 // Don't auto-disconnect here, connection might be re-established
             };
             
