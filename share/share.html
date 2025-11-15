@@ -83,7 +83,7 @@
         
         // --- UI Elements ---
         const ui = {
-            loader: null,
+            topLoader: null,
             appContainer: null,
             myPeerIdText: null,
             copyPeerIdBtn: null,
@@ -191,7 +191,9 @@
         }
 
         async function initApp() {
-            ui.loader.classList.add('hidden');
+            console.log('initApp');
+            console.log(ui.topLoader)
+            ui.topLoader.classList.add('hidden');
             ui.appContainer.classList.remove('hidden');
 
             try {
@@ -1097,7 +1099,7 @@
     </div>
 
     <!-- Loading Banner (small, fixed at top) -->
-    <div id="loader" class="fixed top-3 inset-x-0 z-50 flex justify-center">
+    <div id="topLoader" class="fixed top-3 inset-x-0 z-50 flex justify-center">
         <div class="flex items-center space-x-3 bg-gray-800/80 px-4 py-2 rounded-md shadow-lg backdrop-blur-sm">
         <svg class="lucide lucide-loader animate-spin w-6 h-6 text-blue-400"><use xlink:href="#loader"></use></svg>
         <span class="text-sm text-gray-200 font-medium">Connecting to services...</span>
