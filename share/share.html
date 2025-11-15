@@ -15,13 +15,13 @@
     <!-- Firebase SDK -->
     <script type="module">
         // --- Firebase Imports ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { 
             getAuth, 
             signInAnonymously, 
             signInWithCustomToken, 
             onAuthStateChanged 
-        } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { 
             getFirestore, 
             doc, 
@@ -35,7 +35,7 @@
             where, 
             serverTimestamp,
             getDocs
-        } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Config & Constants ---
 
@@ -44,12 +44,12 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             // Fallback config for local testing (replace with your own)
             apiKey: "AIzaSyCEqDSsMSXIjJKGpYddzSSRTstD-mMVEZ4",
-  authDomain: "p2psharing-cdf34.firebaseapp.com",
-  projectId: "p2psharing-cdf34",
-  storageBucket: "p2psharing-cdf34.firebasestorage.app",
-  messagingSenderId: "466892545264",
-  appId: "1:466892545264:web:9436e4befb5634db8d3635",
-  measurementId: "G-R3B5PK1GZM"
+            authDomain: "p2psharing-cdf34.firebaseapp.com",
+            projectId: "p2psharing-cdf34",
+            storageBucket: "p2psharing-cdf34.firebasestorage.app",
+            messagingSenderId: "466892545264",
+            appId: "1:466892545264:web:9436e4befb5634db8d3635",
+            measurementId: "G-R3B5PK1GZM"
         };
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
@@ -453,12 +453,18 @@
                 console.log(`Connection state with ${peerId}: ${state}`);
                 
                 if (state === 'connected') {
-                    // showStatus(`Connected to ${peerId}.`, "success"); // <-- REMOVED: We'll show this when data channel is open
+                    // showStatus(`Connected to ${peerId}.`, "success"); // <-- REMOVED
                     peerConnections[peerId] = pc; // Store only on success
-                    // updatePeerCardUI(peerId, true); // <-- REMOVED: Moved to setupDataChannel
+                    // updatePeerCardUI(peerId, true); // <-- REMOVED
                 } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-                    showStatus(`Disconnected from ${peerId}.`, "error");
-                    disconnectFromPeer(peerId); // Full cleanup
+                    showStatus(`Connection to ${peerId} lost.`, "error");
+                    // We will NOT call disconnectFromPeer here.
+                    // We let the data channel's 'onclose' event handle the UI and state update,
+                    // as that's what truly matters for sending files.
+                    if (peerConnections[peerId]) {
+                        peerConnections[peerId].close();
+                        delete peerConnections[peerId];
+                    }
                 }
             };
 
@@ -513,6 +519,9 @@
             
             channel.onclose = () => {
                 console.log(`Data channel with ${peerId} is closed.`);
+                if (dataChannels[peerId]) {
+                    delete dataChannels[peerId]; // <-- Explicitly delete here
+                }
                 updatePeerCardUI(peerId, false); // <-- ADDED: Update UI if channel closes
                 // Don't auto-disconnect here, connection might be re-established
             };
