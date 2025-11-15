@@ -21,6 +21,19 @@
             <input id="remoteIdInput" maxlength="4" placeholder="peer id" />
             <button id="connectBtn" class="btn-primary">Connect</button>
           </div>
+          <div class="manual-panel">
+            <div class="panel-header" style="margin-top:10px">No-server Connect</div>
+            <div class="muted small">Use copy/paste to exchange connection data (works without signaling server)</div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button id="createOfferBtn" class="btn">Create Offer</button>
+              <button id="acceptOfferBtn" class="btn">Accept Offer</button>
+            </div>
+            <textarea id="manualOut" placeholder="Offer / Answer will appear here" rows="4" style="width:100%;margin-top:8px;padding:8px;border-radius:6px;background:transparent;border:1px solid rgba(255,255,255,0.03);color:inherit"></textarea>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button id="copyOut" class="btn">Copy</button>
+              <button id="pasteRemote" class="btn">Paste Remote and Finish</button>
+            </div>
+          </div>
         </div>
 
         <div class="peers-panel">
