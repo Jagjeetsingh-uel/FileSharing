@@ -26,8 +26,11 @@
   localStorage.setItem('fs:tempId', myId);
   myIdEl.textContent = myId;
 
-  // Signaling server auto-detect / configuration.
-  // On GitHub Pages (e.g. jagjeetsingh-uel.github.io) there is NO WebSocket endpoint, so we skip attempting.
+  // Force serverless/manual mode when true. This prevents any WebSocket attempts.
+  // Set to `true` to ensure the client never tries to connect to a signaling server.
+  const FORCE_SERVERLESS = true;
+
+  // Signaling server auto-detect / configuration (skipped when FORCE_SERVERLESS is true)
   const IS_GITHUB_PAGES = /github\.io$/i.test(location.host);
   const EXPLICIT_SIGNALING_URL = window.__SIGNALING_URL__ || null; // allow injection before script load
   const DERIVED_SIGNALING_URL = (!IS_GITHUB_PAGES && !EXPLICIT_SIGNALING_URL)
@@ -36,33 +39,39 @@
 
   let ws = null;
   let signalingEnabled = false;
-  if (DERIVED_SIGNALING_URL) {
-    try {
-      ws = new WebSocket(DERIVED_SIGNALING_URL);
-      ws.addEventListener('open', () => {
-        signalingEnabled = true;
-        console.info('[signaling] connected', DERIVED_SIGNALING_URL);
-        createTempNote('Signaling server connected');
-        ws.send(JSON.stringify({ type: 'register', id: myId }));
-        ws.send(JSON.stringify({ type: 'list' }));
-      });
-      ws.addEventListener('error', (err) => {
-        signalingEnabled = false;
-        console.warn('[signaling] error, switching to manual mode', err);
-        createTempNote('No signaling server (manual mode)');
-      });
-      ws.addEventListener('close', () => {
-        signalingEnabled = false;
-        console.warn('[signaling] closed');
-        createTempNote('Signaling closed (manual mode)');
-      });
-    } catch (e) {
-      signalingEnabled = false;
-      ws = null;
-      console.warn('[signaling] construction failed, manual mode fallback', e);
-    }
+
+  if (FORCE_SERVERLESS) {
+    console.info('[signaling] forced serverless/manual mode');
+    createTempNote('Manual signaling mode (no server)');
   } else {
-    console.info('[signaling] skipped (GitHub Pages or no URL provided)');
+    if (DERIVED_SIGNALING_URL) {
+      try {
+        ws = new WebSocket(DERIVED_SIGNALING_URL);
+        ws.addEventListener('open', () => {
+          signalingEnabled = true;
+          console.info('[signaling] connected', DERIVED_SIGNALING_URL);
+          createTempNote('Signaling server connected');
+          ws.send(JSON.stringify({ type: 'register', id: myId }));
+          ws.send(JSON.stringify({ type: 'list' }));
+        });
+        ws.addEventListener('error', (err) => {
+          signalingEnabled = false;
+          console.warn('[signaling] error, switching to manual mode', err);
+          createTempNote('No signaling server (manual mode)');
+        });
+        ws.addEventListener('close', () => {
+          signalingEnabled = false;
+          console.warn('[signaling] closed');
+          createTempNote('Signaling closed (manual mode)');
+        });
+      } catch (e) {
+        signalingEnabled = false;
+        ws = null;
+        console.warn('[signaling] construction failed, manual mode fallback', e);
+      }
+    } else {
+      console.info('[signaling] skipped (GitHub Pages or no URL provided)');
+    }
   }
 
   const peers = {}; // id -> {pc, dc}
