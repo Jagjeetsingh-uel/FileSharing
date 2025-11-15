@@ -144,6 +144,21 @@
             }
         }
 
+        // Wait for any of the provided peerIds to have an open data channel. Returns true if any opened.
+        function waitForAnyChannelOpen(peerIds, timeoutMs = 5000) {
+            return new Promise((resolve) => {
+                const start = Date.now();
+                const check = () => {
+                    for (const pid of peerIds) {
+                        if (dataChannels[pid] && dataChannels[pid].readyState === 'open') return resolve(true);
+                    }
+                    if (Date.now() - start > timeoutMs) return resolve(false);
+                    setTimeout(check, 300);
+                };
+                check();
+            });
+        }
+
         function setupEventListeners() {
             ui.copyPeerIdBtn.addEventListener('click', copyPeerId);
             ui.fileSendModalBackdrop.addEventListener('click', closeSendFileModal);
@@ -356,8 +371,15 @@
             });
         }
 
+        // Debug helper: log signals and important events
+        async function debugLogSignalEvent(eventName, payload) {
+            try { console.debug(`[signal] ${eventName}:`, payload); } catch(e) {}
+        }
+
         async function handleSignal(signal) {
             const { from: peerId, sdp, ice } = signal;
+
+            await debugLogSignalEvent('received', signal);
 
             try {
                 let pc = peerConnections[peerId];
@@ -377,6 +399,7 @@
                     await pc.setLocalDescription(answer);
                     
                     sendSignal(peerId, { sdp: answer });
+                    await debugLogSignalEvent('sent-answer', { to: peerId });
                 } 
                 // If an answer arrives, we are the caller
                 else if (sdp && sdp.type === 'answer') {
@@ -393,6 +416,7 @@
                         return;
                     }
                     await pc.addIceCandidate(new RTCIceCandidate(ice));
+                    await debugLogSignalEvent('added-ice', { from: peerId });
                 }
             } catch (e) {
                 console.error("Signal handling error:", e);
@@ -532,6 +556,7 @@
             };
             
             channel.onmessage = (event) => {
+                console.debug(`Data channel message from ${peerId}:`, event.data instanceof ArrayBuffer ? `ArrayBuffer(${event.data.byteLength})` : event.data);
                 handleDataChannelMessage(peerId, event.data);
             };
         }
@@ -689,10 +714,12 @@
 
         // --- File Modal & UI ---
 
-        function openSendFileModal(targetPeerIds = []) {
+        async function openSendFileModal(targetPeerIds = []) {
             ui.fileSendPeerList.innerHTML = '';
             let connectedPeers = 0;
+            let pendingPeers = [];
             
+            // Populate already-open channels
             Object.keys(dataChannels).forEach(peerId => {
                 if (dataChannels[peerId].readyState === 'open') {
                     connectedPeers++;
@@ -706,6 +733,35 @@
                     ui.fileSendPeerList.appendChild(peerItem);
                 }
             });
+
+            // If none open, check if there are peerConnections in progress and wait briefly for data channels to open
+            if (connectedPeers === 0) {
+                // find peers with connections but no open data channel yet
+                pendingPeers = Object.keys(peerConnections).filter(pid => ! (dataChannels[pid] && dataChannels[pid].readyState === 'open'));
+                if (pendingPeers.length > 0) {
+                    showStatus('Waiting for data channels to open...', 'loading');
+                    // wait up to 5s for any channel to open
+                    const opened = await waitForAnyChannelOpen(pendingPeers, 5000);
+                    if (opened) {
+                        // repopulate the list with any now-open channels
+                        ui.fileSendPeerList.innerHTML = '';
+                        connectedPeers = 0;
+                        Object.keys(dataChannels).forEach(peerId => {
+                            if (dataChannels[peerId].readyState === 'open') {
+                                connectedPeers++;
+                                const isSelected = targetPeerIds.includes(peerId) || targetPeerIds.length === 0;
+                                const peerItem = document.createElement('label');
+                                peerItem.className = "flex items-center space-x-3 p-3 bg-gray-700 rounded-md cursor-pointer hover:bg-gray-600";
+                                peerItem.innerHTML = `
+                                    <input type="checkbox" data-peer-id="${peerId}" class="form-checkbox h-5 w-5 rounded bg-gray-800 border-gray-600 text-blue-600 focus:ring-blue-500" ${isSelected ? 'checked' : ''}>
+                                    <span class="font-medium">${peerId}</span>
+                                `;
+                                ui.fileSendPeerList.appendChild(peerItem);
+                            }
+                        });
+                    }
+                }
+            }
 
             if (connectedPeers === 0) {
                 showStatus("No connected peers to send files to.", "error");
