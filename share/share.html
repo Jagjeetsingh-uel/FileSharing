@@ -510,6 +510,18 @@
                     }
                 }
             };
+
+            pc.oniceconnectionstatechange = () => {
+                console.debug('[pc.oniceconnectionstatechange]', { peerId, iceConnectionState: pc.iceConnectionState });
+            };
+
+            pc.onicegatheringstatechange = () => {
+                console.debug('[pc.onicegatheringstatechange]', { peerId, iceGatheringState: pc.iceGatheringState });
+            };
+
+            pc.onnegotiationneeded = async () => {
+                console.debug('[pc.onnegotiationneeded]', { peerId });
+            };
             
             pc.onconnectionstatechange = () => {
                 const state = pc.connectionState;
