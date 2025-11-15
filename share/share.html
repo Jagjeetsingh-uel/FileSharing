@@ -768,7 +768,7 @@
                 // If none open, check if there are peerConnections in progress and wait briefly for data channels to open
                 if (connectedPeers === 0) {
                     // find peers with connections but no open data channel yet
-                    pendingPeers = Object.keys(peerConnections).filter(pid => !(dataChannels[pid] && dataChannels[pid].readyState === 'open'));
+                    pendingPeers = Object.keys(peerConnections).filter(pid => ! (dataChannels[pid] && dataChannels[pid].readyState === 'open'));
                     console.debug('[openSendFileModal] pendingPeers (connections exist but no open channel)', pendingPeers);
 
                     if (pendingPeers.length > 0) {
