@@ -1061,10 +1061,10 @@
         Status message
     </div>
 
-    <!-- Loading Spinner -->
-    <div id="loader" class="flex flex-col items-center justify-center min-h-screen">
-        <svg class="lucide lucide-loader animate-spin w-12 h-12 text-blue-500"><use xlink:href="#loader"></use></svg>
-        <p class="mt-4 text-lg text-gray-300">Connecting to services...</p>
+    <!-- Loading Banner (small, fixed at top) -->
+    <div id="loader" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center space-x-3 bg-gray-800/80 px-4 py-2 rounded-md shadow-lg backdrop-blur-sm">
+        <svg class="lucide lucide-loader animate-spin w-6 h-6 text-blue-400"><use xlink:href="#loader"></use></svg>
+        <span class="text-sm text-gray-200 font-medium">Connecting to services...</span>
     </div>
 
     <!-- Main App Container -->
