@@ -13,15 +13,17 @@
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js"></script>
     <!-- Firebase SDK -->
+     
     <script type="module">
         // --- Firebase Imports ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+          import { initializeApp } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js";
+          
         import { 
             getAuth, 
             signInAnonymously, 
             signInWithCustomToken, 
             onAuthStateChanged 
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js";
         import { 
             getFirestore, 
             doc, 
@@ -35,7 +37,7 @@
             where, 
             serverTimestamp,
             getDocs
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
         // --- Config & Constants ---
 
@@ -43,13 +45,15 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'p2p-share-default';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             // Fallback config for local testing (replace with your own)
-            apiKey: "YOUR_API_KEY",
-            authDomain: "YOUR_AUTH_DOMAIN",
-            projectId: "YOUR_PROJECT_ID",
-            storageBucket: "YOUR_STORAGE_BUCKET",
-            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-            appId: "YOUR_APP_ID"
+            apiKey: "AIzaSyCEqDSsMSXIjJKGpYddzSSRTstD-mMVEZ4",
+            authDomain: "p2psharing-cdf34.firebaseapp.com",
+            projectId: "p2psharing-cdf34",
+            storageBucket: "p2psharing-cdf34.firebasestorage.app",
+            messagingSenderId: "466892545264",
+            appId: "1:466892545264:web:0f611e567fff00608d3635",
+            measurementId: "G-190JYNCLJT"
         };
+
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         // Firestore Paths
@@ -112,7 +116,7 @@
 
         async function initFirebase() {
             try {
-                const app = initializeApp(firebaseConfig);
+                const app = initializeApp(firebaseConfig);                
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
