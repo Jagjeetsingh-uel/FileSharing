@@ -296,7 +296,8 @@
         }
 
         function renderPeerInList(peerId, peerData) {
-            const isConnected = !!peerConnections[peerId];
+            // Consider a peer connected only when its data channel is open (ready to send files)
+            const isConnected = !!(dataChannels[peerId] && dataChannels[peerId].readyState === 'open');
             const ua = peerData.userAgent || "Unknown Device";
             
             // Simple device type detection
