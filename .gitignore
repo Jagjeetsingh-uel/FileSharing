@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+/.vscode/
+/.idea/
+npm-debug.log*
+coverage/
+/.parcel-cache/
+/.pnp.cjs
+/.pnp.loader.mjs
