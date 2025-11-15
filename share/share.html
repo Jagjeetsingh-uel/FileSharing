@@ -79,6 +79,7 @@
         let peerConnections = {}; // { peerId: RTCPeerConnection }
         let dataChannels = {}; // { peerId: RTCDataChannel }
         let receivingFiles = {}; // { fileId: { metadata, chunks, receivedSize } }
+        let pendingIceCandidates = {}; // { peerId: Array<RTCIceCandidateInit> }
         
         // --- UI Elements ---
         const ui = {
@@ -397,6 +398,19 @@
                     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
                     console.debug('[handleSignal] setRemoteDescription (offer) complete', { peerId });
 
+                    // Flush any ICE candidates that arrived early
+                    if (pendingIceCandidates[peerId]?.length) {
+                        console.debug('[handleSignal] flushing queued ICE (as callee)', { peerId, count: pendingIceCandidates[peerId].length });
+                        for (const cand of pendingIceCandidates[peerId]) {
+                            try {
+                                await pc.addIceCandidate(new RTCIceCandidate(cand));
+                            } catch (e) {
+                                console.error('[handleSignal] failed to add queued ICE (callee)', e);
+                            }
+                        }
+                        pendingIceCandidates[peerId] = [];
+                    }
+
                     const answer = await pc.createAnswer();
                     console.debug('[handleSignal] created answer', { peerId, type: answer.type, sdpSize: answer.sdp?.length });
                     await pc.setLocalDescription(answer);
@@ -414,11 +428,32 @@
                     console.debug('[handleSignal] setting remote description (answer)', { peerId, sdpType: sdp.type });
                     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
                     console.debug('[handleSignal] setRemoteDescription (answer) complete', { peerId });
+
+                    // Flush any ICE candidates that arrived early
+                    if (pendingIceCandidates[peerId]?.length) {
+                        console.debug('[handleSignal] flushing queued ICE (as caller)', { peerId, count: pendingIceCandidates[peerId].length });
+                        for (const cand of pendingIceCandidates[peerId]) {
+                            try {
+                                await pc.addIceCandidate(new RTCIceCandidate(cand));
+                            } catch (e) {
+                                console.error('[handleSignal] failed to add queued ICE (caller)', e);
+                            }
+                        }
+                        pendingIceCandidates[peerId] = [];
+                    }
                 } 
                 // If an ICE candidate arrives
                 else if (ice) {
                     if (!pc) {
-                        console.error("No peer connection for ICE candidate from", peerId);
+                        console.debug('[handleSignal] queue ICE (no pc yet)', { peerId, ice });
+                        if (!pendingIceCandidates[peerId]) pendingIceCandidates[peerId] = [];
+                        pendingIceCandidates[peerId].push(ice);
+                        return;
+                    }
+                    if (!pc.remoteDescription) {
+                        console.debug('[handleSignal] queue ICE (no remoteDescription yet)', { peerId, ice });
+                        if (!pendingIceCandidates[peerId]) pendingIceCandidates[peerId] = [];
+                        pendingIceCandidates[peerId].push(ice);
                         return;
                     }
                     console.debug('[handleSignal] adding ICE candidate', { peerId, ice });
@@ -1062,9 +1097,11 @@
     </div>
 
     <!-- Loading Banner (small, fixed at top) -->
-    <div id="loader" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center space-x-3 bg-gray-800/80 px-4 py-2 rounded-md shadow-lg backdrop-blur-sm">
+    <div id="loader" class="fixed top-3 inset-x-0 z-50 flex justify-center">
+        <div class="flex items-center space-x-3 bg-gray-800/80 px-4 py-2 rounded-md shadow-lg backdrop-blur-sm">
         <svg class="lucide lucide-loader animate-spin w-6 h-6 text-blue-400"><use xlink:href="#loader"></use></svg>
         <span class="text-sm text-gray-200 font-medium">Connecting to services...</span>
+        </div>
     </div>
 
     <!-- Main App Container -->
