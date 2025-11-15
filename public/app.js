@@ -18,6 +18,9 @@
   const activeTransfersEl = document.getElementById('activeTransfers');
   const selectAllPeers = document.getElementById('selectAllPeers');
   const refreshPeersBtn = document.getElementById('refreshPeers');
+  const menuBtn = document.getElementById('menuBtn');
+  const sidebar = document.querySelector('.sidebar');
+  const sidebarOverlay = document.getElementById('sidebarOverlay');
 
   let myId = localStorage.getItem('fs:tempId') || genId();
   localStorage.setItem('fs:tempId', myId);
@@ -177,6 +180,18 @@
   } else {
     // no WebSocket signaling available — manual mode only
     createTempNote('Signaling server not found — manual copy/paste mode enabled');
+  }
+
+  // Mobile sidebar toggle behavior
+  if (menuBtn && sidebar && sidebarOverlay){
+    menuBtn.addEventListener('click', ()=>{
+      sidebar.classList.toggle('open');
+      sidebarOverlay.classList.toggle('show');
+    });
+    sidebarOverlay.addEventListener('click', ()=>{
+      sidebar.classList.remove('open');
+      sidebarOverlay.classList.remove('show');
+    });
   }
 
   function renderPeerList(list){
