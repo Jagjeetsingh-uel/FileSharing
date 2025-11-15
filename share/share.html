@@ -393,11 +393,15 @@
                     showStatus(`Incoming connection from ${peerId}...`, "info");
                     pc = createPeerConnection(peerId);
                     
+                    console.debug('[handleSignal] setting remote description (offer)', { peerId, sdpType: sdp.type });
                     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-                    
+                    console.debug('[handleSignal] setRemoteDescription (offer) complete', { peerId });
+
                     const answer = await pc.createAnswer();
+                    console.debug('[handleSignal] created answer', { peerId, type: answer.type, sdpSize: answer.sdp?.length });
                     await pc.setLocalDescription(answer);
-                    
+                    console.debug('[handleSignal] setLocalDescription (answer) complete', { peerId });
+
                     sendSignal(peerId, { sdp: answer });
                     await debugLogSignalEvent('sent-answer', { to: peerId });
                 } 
@@ -407,7 +411,9 @@
                         console.error("No peer connection for answer from", peerId);
                         return;
                     }
+                    console.debug('[handleSignal] setting remote description (answer)', { peerId, sdpType: sdp.type });
                     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+                    console.debug('[handleSignal] setRemoteDescription (answer) complete', { peerId });
                 } 
                 // If an ICE candidate arrives
                 else if (ice) {
@@ -415,7 +421,9 @@
                         console.error("No peer connection for ICE candidate from", peerId);
                         return;
                     }
+                    console.debug('[handleSignal] adding ICE candidate', { peerId, ice });
                     await pc.addIceCandidate(new RTCIceCandidate(ice));
+                    console.debug('[handleSignal] addIceCandidate complete', { peerId });
                     await debugLogSignalEvent('added-ice', { from: peerId });
                 }
             } catch (e) {
@@ -425,6 +433,7 @@
 
         async function sendSignal(toPeerId, data) {
             try {
+                console.debug('[sendSignal] preparing to send', { toPeerId, dataType: data.sdp ? 'sdp' : data.ice ? 'ice' : 'other' });
                 // Firestore doesn't accept complex browser RTC objects (RTCIceCandidate, RTCSessionDescription)
                 // so sanitize any RTC objects to plain JSON before writing.
                 const sanitized = { ...data };
@@ -451,7 +460,8 @@
                 };
                 // Path to the sub-collection 'incoming' under the *recipient's* document
                 const signalsRef = collection(db, SIGNALS_COLLECTION_BASE, toPeerId, SIGNALS_SUBCOLLECTION);
-                await addDoc(signalsRef, signalDoc);
+                const res = await addDoc(signalsRef, signalDoc);
+                console.debug('[sendSignal] signal written', { toPeerId, docId: res.id });
             } catch (e) {
                 console.error("Error sending signal:", e);
             }
@@ -464,8 +474,9 @@
                 console.warn("Already connected or connecting to", peerId);
                 return;
             }
+            console.debug('[connectToPeer] start', { peerId });
             showStatus(`Connecting to ${peerId}...`, "loading");
-            
+
             const pc = createPeerConnection(peerId);
             
             // Create data channel
@@ -475,7 +486,9 @@
             // Create offer
             try {
                 const offer = await pc.createOffer();
+                console.debug('[connectToPeer] created offer', { peerId, type: offer.type, sdpSize: offer.sdp?.length });
                 await pc.setLocalDescription(offer);
+                console.debug('[connectToPeer] setLocalDescription complete', { peerId });
                 sendSignal(peerId, { sdp: offer });
             } catch (e) {
                 console.error("Error creating offer:", e);
@@ -484,11 +497,17 @@
         }
 
         function createPeerConnection(peerId) {
+            console.debug('[createPeerConnection] creating RTCPeerConnection', { peerId, STUN_SERVERS });
             const pc = new RTCPeerConnection(STUN_SERVERS);
             
             pc.onicecandidate = (event) => {
+                console.debug('[pc.onicecandidate]', { peerId, candidate: event.candidate });
                 if (event.candidate) {
-                    sendSignal(peerId, { ice: event.candidate });
+                    try {
+                        sendSignal(peerId, { ice: event.candidate });
+                    } catch (e) {
+                        console.error('[pc.onicecandidate] sendSignal failed', e);
+                    }
                 }
             };
             
@@ -519,6 +538,7 @@
             };
             
             peerConnections[peerId] = pc; // Store temporarily
+            console.debug('[createPeerConnection] stored temporary peerConnection', { peerId });
             return pc;
         }
 
