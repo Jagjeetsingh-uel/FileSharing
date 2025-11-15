@@ -7,6 +7,8 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// Serve root files first (so root `index.html` becomes the main entry), then fall back to `public/` assets
+app.use(express.static(path.join(__dirname, '..')));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Map of clientId -> ws
