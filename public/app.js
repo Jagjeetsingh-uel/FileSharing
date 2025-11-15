@@ -26,23 +26,49 @@
   localStorage.setItem('fs:tempId', myId);
   myIdEl.textContent = myId;
 
-  // Try to open a signaling WebSocket to the same origin. If none exists (static hosting), fall back to manual mode.
+  // Signaling server auto-detect / configuration.
+  // On GitHub Pages (e.g. jagjeetsingh-uel.github.io) there is NO WebSocket endpoint, so we skip attempting.
+  const IS_GITHUB_PAGES = /github\.io$/i.test(location.host);
+  const EXPLICIT_SIGNALING_URL = window.__SIGNALING_URL__ || null; // allow injection before script load
+  const DERIVED_SIGNALING_URL = (!IS_GITHUB_PAGES && !EXPLICIT_SIGNALING_URL)
+    ? (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+    : EXPLICIT_SIGNALING_URL; // could still be null
+
   let ws = null;
   let signalingEnabled = false;
-  try{
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
-    ws.addEventListener('open', ()=>{ signalingEnabled = true; createTempNote('Signaling server connected'); ws.send(JSON.stringify({type:'register', id: myId})); ws.send(JSON.stringify({type:'list'})); });
-    ws.addEventListener('error', ()=>{ signalingEnabled = false; createTempNote('No signaling server (serverless mode)'); });
-    ws.addEventListener('close', ()=>{ signalingEnabled = false; createTempNote('Signaling connection closed'); });
-  }catch(e){ signalingEnabled = false; ws = null; }
+  if (DERIVED_SIGNALING_URL) {
+    try {
+      ws = new WebSocket(DERIVED_SIGNALING_URL);
+      ws.addEventListener('open', () => {
+        signalingEnabled = true;
+        console.info('[signaling] connected', DERIVED_SIGNALING_URL);
+        createTempNote('Signaling server connected');
+        ws.send(JSON.stringify({ type: 'register', id: myId }));
+        ws.send(JSON.stringify({ type: 'list' }));
+      });
+      ws.addEventListener('error', (err) => {
+        signalingEnabled = false;
+        console.warn('[signaling] error, switching to manual mode', err);
+        createTempNote('No signaling server (manual mode)');
+      });
+      ws.addEventListener('close', () => {
+        signalingEnabled = false;
+        console.warn('[signaling] closed');
+        createTempNote('Signaling closed (manual mode)');
+      });
+    } catch (e) {
+      signalingEnabled = false;
+      ws = null;
+      console.warn('[signaling] construction failed, manual mode fallback', e);
+    }
+  } else {
+    console.info('[signaling] skipped (GitHub Pages or no URL provided)');
+  }
 
   const peers = {}; // id -> {pc, dc}
   const pendingChunkHeaders = {}; // peerId -> [{fileId,size}, ...]
 
-  ws.addEventListener('open', ()=>{
-    ws.send(JSON.stringify({type:'register', id: myId}));
-    ws.send(JSON.stringify({type:'list'}));
-  });
+  // Remove duplicate open handler (handled above). If ws is null we are in manual-only mode.
 
   // Drop zone support: allow files to be dragged into the main area
   const dropZone = document.getElementById('dropZone');
