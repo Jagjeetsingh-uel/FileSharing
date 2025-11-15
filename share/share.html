@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P File Share</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js"></script>
+    <!-- Firebase SDK -->
+    <script type="module">
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            onSnapshot, 
+            collection, 
+            addDoc, 
+            deleteDoc, 
+            query, 
+            where, 
+            serverTimestamp,
+            getDocs
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Config & Constants ---
+
+        // IMPORTANT: These are global variables provided by the runtime environment.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'p2p-share-default';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            // Fallback config for local testing (replace with your own)
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_AUTH_DOMAIN",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Firestore Paths
+        const PEERS_COLLECTION = `/artifacts/${appId}/public/data/peers`;
+        const SIGNALS_COLLECTION_BASE = `/artifacts/${appId}/public/data/signals`;
+        const SIGNALS_SUBCOLLECTION = 'incoming'; // Sub-collection for each peer's signals
+
+        // WebRTC Config
+        const STUN_SERVERS = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+        const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+        const FILE_ID_BYTES = 16; // 16-char random ID
+
+        // --- Global State ---
+        let db, auth;
+        let myPeerId = null;
+        let userId = null;
+        let heartBeatInterval = null;
+        let peerListeners = {
+            peersUnsub: null,
+            signalsUnsub: null
+        };
+        
+        // Connection & File State
+        let peerConnections = {}; // { peerId: RTCPeerConnection }
+        let dataChannels = {}; // { peerId: RTCDataChannel }
+        let receivingFiles = {}; // { fileId: { metadata, chunks, receivedSize } }
+        
+        // --- UI Elements ---
+        const ui = {
+            loader: null,
+            appContainer: null,
+            myPeerIdText: null,
+            copyPeerIdBtn: null,
+            peerList: null,
+            fileSendModal: null,
+            fileSendModalBackdrop: null,
+            fileSendPeerList: null,
+            fileInput: null,
+            fileInputLabel: null,
+            fileSendButton: null,
+            fileDropzone: null,
+            fileQueueList: null,
+            progressContainer: null,
+            statusMessage: null
+        };
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Cache all UI elements
+            Object.keys(ui).forEach(key => {
+                ui[key] = document.getElementById(key);
+            });
+            initFirebase();
+            setupEventListeners();
+            // Initialize Lucide icons after DOM is loaded
+            lucide.createIcons();
+        });
+
+        async function initFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                showStatus("Authenticating...", "loading");
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        showStatus("Authentication successful.", "success");
+                        await initApp();
+                    } else {
+                        // No user, attempt sign in
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (authError) {
+                            console.error("Auth error:", authError);
+                            showStatus("Authentication failed. Please refresh.", "error");
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Firebase init error:", e);
+                showStatus("Could not connect to services. Please refresh.", "error");
+            }
+        }
+
+        function setupEventListeners() {
+            ui.copyPeerIdBtn.addEventListener('click', copyPeerId);
+            ui.fileSendModalBackdrop.addEventListener('click', closeSendFileModal);
+            document.getElementById('closeModalBtn').addEventListener('click', closeSendFileModal);
+            ui.fileInput.addEventListener('change', handleFileSelection);
+            ui.fileSendButton.addEventListener('click', sendFilesToSelectedPeers);
+
+            // Setup Dropzone
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                ui.fileDropzone.addEventListener(eventName, preventDefaults, false);
+            });
+            ['dragenter', 'dragover'].forEach(eventName => {
+                ui.fileDropzone.addEventListener(eventName, () => ui.fileDropzone.classList.add('border-blue-500', 'bg-gray-700'), false);
+            });
+            ['dragleave', 'drop'].forEach(eventName => {
+                ui.fileDropzone.addEventListener(eventName, () => ui.fileDropzone.classList.remove('border-blue-500', 'bg-gray-700'), false);
+            });
+            ui.fileDropzone.addEventListener('drop', handleFileDrop, false);
+        }
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function handleFileDrop(e) {
+            ui.fileInput.files = e.dataTransfer.files;
+            handleFileSelection();
+        }
+
+        async function initApp() {
+            ui.loader.classList.add('hidden');
+            ui.appContainer.classList.remove('hidden');
+
+            try {
+                myPeerId = await generateUniquePeerId();
+                ui.myPeerIdText.textContent = myPeerId;
+                showStatus("Ready to connect.", "success");
+
+                // Start heartbeat to keep profile alive
+                await updateHeartbeat();
+                heartBeatInterval = setInterval(updateHeartbeat, 30000); // 30 sec
+
+                // Clean up old signals
+                await cleanupOldSignals();
+
+                // Start listening
+                listenForPeers();
+                listenForSignals();
+
+                window.addEventListener('beforeunload', cleanup);
+            } catch (e) {
+                console.error("App init error:", e);
+                showStatus("Error generating Peer ID. Please refresh.", "error");
+            }
+        }
+
+        async function cleanup() {
+            if (heartBeatInterval) clearInterval(heartBeatInterval);
+            if (peerListeners.peersUnsub) peerListeners.peersUnsub();
+            if (peerListeners.signalsUnsub) peerListeners.signalsUnsub();
+
+            // Disconnect all peers
+            Object.values(peerConnections).forEach(pc => pc.close());
+            
+            try {
+                // Delete own peer doc
+                if (myPeerId) {
+                    await deleteDoc(doc(db, PEERS_COLLECTION, myPeerId));
+                }
+                // Delete own signal collection
+                await cleanupOldSignals(true); // Force delete all
+            } catch (e) {
+                console.error("Cleanup error:", e);
+            }
+        }
+        
+        async function cleanupOldSignals(forceAll = false) {
+            if (!myPeerId) return; // Guard clause
+            // Path to the sub-collection 'incoming' under the peer's document
+            const mySignalsRef = collection(db, SIGNALS_COLLECTION_BASE, myPeerId, SIGNALS_SUBCOLLECTION);
+            
+            const q = forceAll 
+                ? mySignalsRef 
+                : query(mySignalsRef, where("timestamp", "<", new Date(Date.now() - 60000))); // older than 1 min
+            
+            const snapshot = await getDocs(q);
+            snapshot.forEach(doc => {
+                deleteDoc(doc.ref);
+            });
+        }
+
+        // --- Peer Discovery & Heartbeat ---
+
+        async function generateUniquePeerId() {
+            let id = '';
+            let isUnique = false;
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            while (!isUnique) {
+                id = '';
+                for (let i = 0; i < 4; i++) {
+                    id += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                const docRef = doc(db, PEERS_COLLECTION, id);
+                const docSnap = await getDoc(docRef);
+                if (!docSnap.exists()) {
+                    isUnique = true;
+                }
+            }
+            return id;
+        }
+
+        async function updateHeartbeat() {
+            if (!myPeerId) return;
+            try {
+                const peerDocRef = doc(db, PEERS_COLLECTION, myPeerId);
+                await setDoc(peerDocRef, {
+                    lastSeen: serverTimestamp(),
+                    userAgent: navigator.userAgentData?.brands?.map(b => b.brand).join(', ') || navigator.userAgent,
+                    userId: userId
+                }, { merge: true });
+            } catch (e) {
+                console.error("Heartbeat failed:", e);
+            }
+        }
+
+        function listenForPeers() {
+            const staleTime = new Date(Date.now() - 60000); // 1 minute ago
+            const q = query(collection(db, PEERS_COLLECTION), where("lastSeen", ">", staleTime));
+
+            peerListeners.peersUnsub = onSnapshot(q, (snapshot) => {
+                ui.peerList.innerHTML = ''; // Clear list
+                let hasPeers = false;
+                snapshot.forEach(doc => {
+                    const peerId = doc.id;
+                    if (peerId === myPeerId) return; // Don't show self
+                    
+                    const peerData = doc.data();
+                    renderPeerInList(peerId, peerData);
+                    hasPeers = true;
+                });
+                
+                if (!hasPeers) {
+                    ui.peerList.innerHTML = `<p class="text-gray-400 text-center col-span-full">No other peers found. Ask them to open this app!</p>`;
+                }
+            }, (error) => {
+                console.error("Error listening for peers:", error);
+                showStatus("Error fetching peers.", "error");
+            });
+        }
+
+        function renderPeerInList(peerId, peerData) {
+            const isConnected = !!peerConnections[peerId];
+            const ua = peerData.userAgent || "Unknown Device";
+            
+            // Simple device type detection
+            let icon = 'monitor';
+            if (ua.toLowerCase().includes('mobile') || ua.toLowerCase().includes('android') || ua.toLowerCase().includes('iphone')) {
+                icon = 'smartphone';
+            }
+
+            const peerCard = document.createElement('div');
+            peerCard.className = `p-4 rounded-lg shadow-md flex items-center justify-between transition-all ${isConnected ? 'bg-green-800/50 border border-green-500' : 'bg-gray-700'}`;
+            peerCard.innerHTML = `
+                <div class="flex items-center space-x-3">
+                    <svg class="lucide lucide-${icon} w-6 h-6 ${isConnected ? 'text-green-400' : 'text-blue-400'}"><use xlink:href="#${icon}"></use></svg>
+                    <div>
+                        <p class="font-semibold text-lg">${peerId}</p>
+                        <p class="text-xs text-gray-400 truncate w-40">${ua}</p>
+                    </div>
+                </div>
+                <div class="flex flex-col space-y-2">
+                    <button data-peer-id="${peerId}" class="connect-btn text-sm px-3 py-1 rounded-md ${isConnected ? 'hidden' : 'bg-blue-600 hover:bg-blue-700'}">Connect</button>
+                    <button data-peer-id="${peerId}" class="send-btn text-sm px-3 py-1 rounded-md ${isConnected ? 'bg-green-600 hover:bg-green-700' : 'hidden'}">Send File</button>
+                    <button data-peer-id="${peerId}" class="disconnect-btn text-sm px-3 py-1 rounded-md ${isConnected ? 'bg-red-600 hover:bg-red-700' : 'hidden'}">Disconnect</button>
+                </div>
+            `;
+            
+            ui.peerList.appendChild(peerCard);
+
+            // Add event listeners
+            const connectBtn = peerCard.querySelector('.connect-btn');
+            if (connectBtn) connectBtn.addEventListener('click', () => connectToPeer(peerId));
+            
+            const sendBtn = peerCard.querySelector('.send-btn');
+            if (sendBtn) sendBtn.addEventListener('click', () => openSendFileModal([peerId]));
+
+            const disconnectBtn = peerCard.querySelector('.disconnect-btn');
+            if (disconnectBtn) disconnectBtn.addEventListener('click', () => disconnectFromPeer(peerId));
+        }
+        
+        // --- WebRTC Signaling ---
+
+        function listenForSignals() {
+            if (!myPeerId) return; // Guard clause
+            // Path to the sub-collection 'incoming' under the peer's document
+            const mySignalsRef = collection(db, SIGNALS_COLLECTION_BASE, myPeerId, SIGNALS_SUBCOLLECTION);
+            
+            peerListeners.signalsUnsub = onSnapshot(mySignalsRef, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === "added") {
+                        handleSignal(change.doc.data());
+                        // Delete signal doc after processing to keep collection clean
+                        deleteDoc(change.doc.ref);
+                    }
+                });
+            }, (error) => {
+                console.error("Error listening for signals:", error);
+            });
+        }
+
+        async function handleSignal(signal) {
+            const { from: peerId, sdp, ice } = signal;
+
+            try {
+                let pc = peerConnections[peerId];
+
+                // If an offer arrives, we are the callee
+                if (sdp && sdp.type === 'offer') {
+                    if (pc) {
+                        console.warn("Existing connection with peer, ignoring offer", peerId);
+                        return;
+                    }
+                    showStatus(`Incoming connection from ${peerId}...`, "info");
+                    pc = createPeerConnection(peerId);
+                    
+                    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+                    
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    
+                    sendSignal(peerId, { sdp: answer });
+                } 
+                // If an answer arrives, we are the caller
+                else if (sdp && sdp.type === 'answer') {
+                    if (!pc) {
+                        console.error("No peer connection for answer from", peerId);
+                        return;
+                    }
+                    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+                } 
+                // If an ICE candidate arrives
+                else if (ice) {
+                    if (!pc) {
+                        console.error("No peer connection for ICE candidate from", peerId);
+                        return;
+                    }
+                    await pc.addIceCandidate(new RTCIceCandidate(ice));
+                }
+            } catch (e) {
+                console.error("Signal handling error:", e);
+            }
+        }
+
+        async function sendSignal(toPeerId, data) {
+            try {
+                const signalDoc = {
+                    from: myPeerId,
+                    timestamp: serverTimestamp(),
+                    ...data
+                };
+                // Path to the sub-collection 'incoming' under the *recipient's* document
+                const signalsRef = collection(db, SIGNALS_COLLECTION_BASE, toPeerId, SIGNALS_SUBCOLLECTION);
+                await addDoc(signalsRef, signalDoc);
+            } catch (e) {
+                console.error("Error sending signal:", e);
+            }
+        }
+
+        // --- WebRTC Connection ---
+
+        async function connectToPeer(peerId) {
+            if (peerConnections[peerId]) {
+                console.warn("Already connected or connecting to", peerId);
+                return;
+            }
+            showStatus(`Connecting to ${peerId}...`, "loading");
+            
+            const pc = createPeerConnection(peerId);
+            
+            // Create data channel
+            const channel = pc.createDataChannel('fileTransfer');
+            setupDataChannel(peerId, channel);
+            
+            // Create offer
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                sendSignal(peerId, { sdp: offer });
+            } catch (e) {
+                console.error("Error creating offer:", e);
+                showStatus(`Failed to connect to ${peerId}.`, "error");
+            }
+        }
+
+        function createPeerConnection(peerId) {
+            const pc = new RTCPeerConnection(STUN_SERVERS);
+            
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendSignal(peerId, { ice: event.candidate });
+                }
+            };
+            
+            pc.onconnectionstatechange = () => {
+                const state = pc.connectionState;
+                console.log(`Connection state with ${peerId}: ${state}`);
+                
+                if (state === 'connected') {
+                    showStatus(`Connected to ${peerId}.`, "success");
+                    peerConnections[peerId] = pc; // Store only on success
+                    updatePeerCardUI(peerId, true);
+                } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+                    showStatus(`Disconnected from ${peerId}.`, "error");
+                    disconnectFromPeer(peerId); // Full cleanup
+                }
+            };
+
+            // This handles the *incoming* data channel from the other peer
+            pc.ondatachannel = (event) => {
+                console.log(`Incoming data channel from ${peerId}`);
+                setupDataChannel(peerId, event.channel);
+            };
+            
+            peerConnections[peerId] = pc; // Store temporarily
+            return pc;
+        }
+
+        function disconnectFromPeer(peerId) {
+            if (peerConnections[peerId]) {
+                peerConnections[peerId].close();
+                delete peerConnections[peerId];
+            }
+            if (dataChannels[peerId]) {
+                dataChannels[peerId].close();
+                delete dataChannels[peerId];
+            }
+            updatePeerCardUI(peerId, false);
+            console.log(`Disconnected from ${peerId}`);
+        }
+
+        function updatePeerCardUI(peerId, isConnected) {
+            const peerCard = ui.peerList.querySelector(`button[data-peer-id="${peerId}"]`)?.closest('div.p-4');
+            if (peerCard) {
+                peerCard.querySelector('.connect-btn').classList.toggle('hidden', isConnected);
+                peerCard.querySelector('.send-btn').classList.toggle('hidden', !isConnected);
+                peerCard.querySelector('.disconnect-btn').classList.toggle('hidden', !isConnected);
+                peerCard.classList.toggle('bg-green-800/50', isConnected);
+                peerCard.classList.toggle('border-green-500', isConnected);
+                peerCard.classList.toggle('bg-gray-700', !isConnected);
+                peerCard.querySelector('.lucide-monitor, .lucide-smartphone').classList.toggle('text-green-400', isConnected);
+                peerCard.querySelector('.lucide-monitor, .lucide-smartphone').classList.toggle('text-blue-400', !isConnected);
+            }
+        }
+
+        // --- WebRTC Data Channel & File Transfer ---
+
+        function setupDataChannel(peerId, channel) {
+            channel.binaryType = 'arraybuffer';
+            
+            channel.onopen = () => {
+                console.log(`Data channel with ${peerId} is open.`);
+                dataChannels[peerId] = channel;
+            };
+            
+            channel.onclose = () => {
+                console.log(`Data channel with ${peerId} is closed.`);
+                // Don't auto-disconnect here, connection might be re-established
+            };
+            
+            channel.onerror = (error) => {
+                console.error(`Data channel error with ${peerId}:`, error);
+            };
+            
+            channel.onmessage = (event) => {
+                handleDataChannelMessage(peerId, event.data);
+            };
+        }
+
+        function handleDataChannelMessage(peerId, data) {
+            try {
+                // Check if data is a string (JSON metadata) or ArrayBuffer (chunk)
+                if (typeof data === 'string') {
+                    const msg = JSON.parse(data);
+                    
+                    if (msg.type === 'metadata') {
+                        // Start receiving a new file
+                        receivingFiles[msg.fileId] = {
+                            metadata: msg,
+                            chunks: [],
+                            receivedSize: 0
+                        };
+                        createReceivingProgressUI(msg.fileId, msg.name, peerId);
+                    } else if (msg.type === 'done') {
+                        // File transfer complete
+                        finalizeFileReceiving(msg.fileId);
+                    }
+                } else {
+                    // It's a file chunk (ArrayBuffer)
+                    const fileIdBytes = data.slice(0, FILE_ID_BYTES);
+                    const fileId = new TextDecoder().decode(fileIdBytes);
+                    const chunk = data.slice(FILE_ID_BYTES);
+                    
+                    const fileData = receivingFiles[fileId];
+                    if (!fileData) {
+                        console.error('Received chunk for unknown fileId:', fileId);
+                        return;
+                    }
+                    
+                    fileData.chunks.push(chunk);
+                    fileData.receivedSize += chunk.byteLength;
+                    
+                    const progress = (fileData.receivedSize / fileData.metadata.size) * 100;
+                    updateProgressUI(fileId, progress);
+                }
+            } catch (e) {
+                console.error("Error processing message:", e);
+            }
+        }
+
+        function finalizeFileReceiving(fileId) {
+            const fileData = receivingFiles[fileId];
+            if (!fileData) return;
+            
+            showStatus(`File ${fileData.metadata.name} received.`, "success");
+            
+            const fileBlob = new Blob(fileData.chunks, { type: fileData.metadata.fileType });
+            
+            // Create download link
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileData.metadata.name;
+            
+            // Update progress card to be a download button
+            const progressCard = document.getElementById(fileId);
+            if (progressCard) {
+                progressCard.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <svg class="lucide lucide-file-check w-6 h-6 text-green-400"><use xlink:href="#file-check"></use></svg>
+                        <div class="flex-1">
+                            <p class="font-medium">${fileData.metadata.name}</p>
+                            <p class="text-sm text-gray-400">Received successfully.</p>
+                        </div>
+                        <a href="${url}" download="${fileData.metadata.name}" class="download-btn bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md">Download</a>
+                    </div>
+                `;
+                // Auto-click to download, then remove
+                a.click();
+                setTimeout(() => {
+                    URL.revokeObjectURL(url);
+                    // We keep the card, but remove the blob URL
+                    const downloadBtn = progressCard.querySelector('.download-btn');
+                    if(downloadBtn) {
+                        downloadBtn.href = "#";
+                        downloadBtn.onclick = () => {
+                             const newBlob = new Blob(fileData.chunks, { type: fileData.metadata.fileType });
+                             const newUrl = URL.createObjectURL(newBlob);
+                             const newA = document.createElement('a');
+                             newA.href = newUrl;
+                             newA.download = fileData.metadata.name;
+                             newA.click();
+                             setTimeout(() => URL.revokeObjectURL(newUrl), 1000);
+                        };
+                    }
+                }, 100);
+            }
+            
+            // Clean up
+            // Don't delete chunks immediately, allow re-download from card
+            // delete receivingFiles[fileId]; 
+        }
+
+        async function sendFileToPeer(peerId, file, onProgress) {
+            const dataChannel = dataChannels[peerId];
+            if (!dataChannel || dataChannel.readyState !== 'open') {
+                showStatus(`Data channel to ${peerId} is not open.`, "error");
+                onProgress(-1); // Signal error
+                return;
+            }
+
+            // Generate a unique ID for this file transfer
+            const fileId = crypto.randomUUID().substring(0, FILE_ID_BYTES);
+            const fileIdBytes = new TextEncoder().encode(fileId);
+            
+            try {
+                // 1. Send metadata
+                dataChannel.send(JSON.stringify({
+                    type: 'metadata',
+                    fileId: fileId,
+                    name: file.name,
+                    size: file.size,
+                    fileType: file.type || 'application/octet-stream'
+                }));
+
+                // 2. Send chunks
+                let offset = 0;
+                while (offset < file.size) {
+                    // Check buffer. If full, wait for it to drain.
+                    if (dataChannel.bufferedAmount > 16 * 1024 * 1024) { // 16MB buffer
+                        await new Promise(resolve => {
+                            dataChannel.onbufferedamountlow = resolve;
+                        });
+                        dataChannel.onbufferedamountlow = null; // Clear listener
+                    }
+                    
+                    const slice = file.slice(offset, offset + CHUNK_SIZE);
+                    const chunk = await slice.arrayBuffer();
+                    
+                    // Create message: [FILE_ID][CHUNK_DATA]
+                    const message = new Uint8Array(FILE_ID_BYTES + chunk.byteLength);
+                    message.set(fileIdBytes, 0);
+                    message.set(new Uint8Array(chunk), FILE_ID_BYTES);
+                    
+                    dataChannel.send(message.buffer);
+                    
+                    offset += chunk.byteLength;
+                    onProgress((offset / file.size) * 100);
+                }
+
+                // 3. Send done message
+                dataChannel.send(JSON.stringify({ type: 'done', fileId: fileId }));
+                onProgress(100); // Done
+            } catch (e) {
+                console.error(`Error sending file ${file.name} to ${peerId}:`, e);
+                showStatus(`Error sending ${file.name}.`, "error");
+                onProgress(-1); // Error
+            }
+        }
+
+        // --- File Modal & UI ---
+
+        function openSendFileModal(targetPeerIds = []) {
+            ui.fileSendPeerList.innerHTML = '';
+            let connectedPeers = 0;
+            
+            Object.keys(dataChannels).forEach(peerId => {
+                if (dataChannels[peerId].readyState === 'open') {
+                    connectedPeers++;
+                    const isSelected = targetPeerIds.includes(peerId) || targetPeerIds.length === 0;
+                    const peerItem = document.createElement('label');
+                    peerItem.className = "flex items-center space-x-3 p-3 bg-gray-700 rounded-md cursor-pointer hover:bg-gray-600";
+                    peerItem.innerHTML = `
+                        <input type="checkbox" data-peer-id="${peerId}" class="form-checkbox h-5 w-5 rounded bg-gray-800 border-gray-600 text-blue-600 focus:ring-blue-500" ${isSelected ? 'checked' : ''}>
+                        <span class="font-medium">${peerId}</span>
+                    `;
+                    ui.fileSendPeerList.appendChild(peerItem);
+                }
+            });
+
+            if (connectedPeers === 0) {
+                showStatus("No connected peers to send files to.", "error");
+                return;
+            }
+            
+            // Clear file input
+            ui.fileInput.value = null;
+            ui.fileQueueList.innerHTML = '';
+            ui.fileInputLabel.textContent = "Drag & drop files here, or click to select";
+
+            ui.fileSendModal.classList.remove('hidden');
+        }
+
+        function closeSendFileModal() {
+            ui.fileSendModal.classList.add('hidden');
+        }
+
+        function handleFileSelection() {
+            ui.fileQueueList.innerHTML = '';
+            const files = ui.fileInput.files;
+            if (files.length === 0) {
+                ui.fileInputLabel.textContent = "Drag & drop files here, or click to select";
+                return;
+            }
+            
+            ui.fileInputLabel.textContent = `${files.length} file(s) selected`;
+            
+            Array.from(files).forEach(file => {
+                const fileItem = document.createElement('div');
+                fileItem.className = "text-sm p-2 bg-gray-700 rounded-md flex items-center space-x-2";
+                fileItem.innerHTML = `
+                    <svg class="lucide lucide-file w-4 h-4 text-gray-400"><use xlink:href="#file"></use></svg>
+                    <span class="flex-1 truncate">${file.name}</span>
+                    <span class="text-xs text-gray-500">${formatBytes(file.size)}</span>
+                `;
+                ui.fileQueueList.appendChild(fileItem);
+            });
+        }
+
+        async function sendFilesToSelectedPeers() {
+            const selectedPeers = Array.from(ui.fileSendPeerList.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(cb => cb.dataset.peerId);
+                
+            const files = ui.fileInput.files;
+            
+            if (selectedPeers.length === 0) {
+                showStatus("No peers selected.", "error", 2000);
+                return;
+            }
+            if (files.length === 0) {
+                showStatus("No files selected.", "error", 2000);
+                return;
+            }
+
+            closeSendFileModal();
+            showStatus(`Sending ${files.length} file(s) to ${selectedPeers.length} peer(s)...`, "info");
+
+            for (const peerId of selectedPeers) {
+                for (const file of files) {
+                    const transferId = `send-${crypto.randomUUID()}`;
+                    const progressCard = createSendingProgressUI(transferId, file.name, peerId);
+                    
+                    sendFileToPeer(peerId, file, (progress) => {
+                        if (progress === 100) {
+                            updateProgressUI(transferId, 100, `Sent to ${peerId}`);
+                            progressCard.classList.remove('bg-gray-700');
+                            progressCard.classList.add('bg-green-800/50');
+                        } else if (progress === -1) {
+                            updateProgressUI(transferId, 0, `Failed to send to ${peerId}`);
+                            progressCard.classList.remove('bg-gray-700');
+                            progressCard.classList.add('bg-red-800/50');
+                        } else {
+                            updateProgressUI(transferId, progress);
+                        }
+                    });
+                }
+            }
+        }
+        
+        // --- UI Helpers ---
+
+        function showStatus(message, type = "info", duration = 3000) {
+            if (!ui.statusMessage) return;
+            console.log(`Status (${type}): ${message}`);
+            
+            ui.statusMessage.textContent = message;
+            ui.statusMessage.classList.remove('bg-blue-600', 'bg-green-600', 'bg-red-600', 'bg-yellow-600', 'hidden');
+            
+            if (type === 'success') ui.statusMessage.classList.add('bg-green-600');
+            else if (type === 'error') ui.statusMessage.classList.add('bg-red-600');
+            else if (type === 'loading') ui.statusMessage.classList.add('bg-yellow-600');
+            else ui.statusMessage.classList.add('bg-blue-600');
+            
+            ui.statusMessage.classList.add('translate-y-0');
+
+            if (duration > 0) {
+                setTimeout(() => {
+                    ui.statusMessage.classList.remove('translate-y-0');
+                    ui.statusMessage.classList.add('hidden');
+                }, duration);
+            }
+        }
+        
+        function createSendingProgressUI(transferId, fileName, peerId) {
+            const card = document.createElement('div');
+            card.id = transferId;
+            card.className = "bg-gray-700 p-4 rounded-lg shadow-md";
+            card.innerHTML = `
+                <div class="flex items-center space-x-3">
+                    <svg class="lucide lucide-upload-cloud w-6 h-6 text-blue-400"><use xlink:href="#upload-cloud"></use></svg>
+                    <div class="flex-1">
+                        <p class="font-medium">${fileName}</p>
+                        <p class="text-sm text-gray-400">Sending to ${peerId}...</p>
+                    </div>
+                </div>
+                <div class="progress-bar-bg bg-gray-600 rounded-full h-2.5 mt-3">
+                    <div class="progress-bar w-0 bg-blue-500 h-2.5 rounded-full transition-all duration-150"></div>
+                </div>
+            `;
+            ui.progressContainer.prepend(card);
+            return card;
+        }
+
+        function createReceivingProgressUI(fileId, fileName, peerId) {
+            const card = document.createElement('div');
+            card.id = fileId;
+            card.className = "bg-gray-700 p-4 rounded-lg shadow-md";
+            card.innerHTML = `
+                <div class="flex items-center space-x-3">
+                    <svg class="lucide lucide-download-cloud w-6 h-6 text-green-400"><use xlink:href="#download-cloud"></use></svg>
+                    <div class="flex-1">
+                        <p class="font-medium">${fileName}</p>
+                        <p class="text-sm text-gray-400">Receiving from ${peerId}...</p>
+                    </div>
+                </div>
+                <div class="progress-bar-bg bg-gray-600 rounded-full h-2.5 mt-3">
+                    <div class="progress-bar w-0 bg-green-500 h-2.5 rounded-full transition-all duration-150"></div>
+                </div>
+            `;
+            ui.progressContainer.prepend(card);
+            return card;
+        }
+
+        function updateProgressUI(id, progress, statusText = null) {
+            const card = document.getElementById(id);
+            if (!card) return;
+            
+            const bar = card.querySelector('.progress-bar');
+            if (bar) bar.style.width = `${progress}%`;
+            
+            if (statusText) {
+                const statusEl = card.querySelector('.text-sm');
+                if (statusEl) statusEl.textContent = statusText;
+            }
+        }
+
+        function copyPeerId() {
+            if (!myPeerId) return;
+            // Use execCommand as clipboard.writeText might fail in iFrames
+            const ta = document.createElement('textarea');
+            ta.value = myPeerId;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+                document.execCommand('copy');
+                showStatus("Peer ID copied!", "success", 1500);
+            } catch (err) {
+                console.error('Copy failed', err);
+                showStatus("Failed to copy ID.", "error", 1500);
+            }
+            document.body.removeChild(ta);
+        }
+        
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Hide scrollbar for aesthetics */
+        ::-webkit-scrollbar {
+            width: 0;
+            background: transparent;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+
+    <!-- Lucide Icons SVG Sprite -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+        <symbol id="monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></symbol>
+        <symbol id="smartphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><line x1="12" x2="12.01" y1="18" y2="18"/></symbol>
+        <symbol id="copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+        <symbol id="upload-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/><path d="m16 16-4-4-4 4"/></symbol>
+        <symbol id="download-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/><path d="m8 17 4 4 4-4"/></symbol>
+        <symbol id="file-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></symbol>
+        <symbol id="file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></symbol>
+        <symbol id="send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+        <symbol id="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></symbol>
+        <symbol id="loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="2" y2="6"/><line x1="12" x2="12" y1="18" y2="22"/><line x1="4.93" x2="7.76" y1="4.93" y2="7.76"/><line x1="16.24" x2="19.07" y1="16.24" y2="19.07"/><line x1="2" x2="6" y1="12" y2="12"/><line x1="18" x2="22" y1="12" y2="12"/><line x1="4.93" x2="7.76" y1="19.07" y2="16.24"/><line x1="16.24" x2="19.07" y1="7.76" y2="4.93"/></symbol>
+    </svg>
+
+    <!-- Global Status Message -->
+    <div id="statusMessage" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-lg text-white font-medium shadow-lg transition-transform duration-300">
+        Status message
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loader" class="flex flex-col items-center justify-center min-h-screen">
+        <svg class="lucide lucide-loader animate-spin w-12 h-12 text-blue-500"><use xlink:href="#loader"></use></svg>
+        <p class="mt-4 text-lg text-gray-300">Connecting to services...</p>
+    </div>
+
+    <!-- Main App Container -->
+    <div id="appContainer" class="hidden container mx-auto max-w-6xl p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl md:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+                P2P File Share
+            </h1>
+            <p class="text-lg text-gray-300 mt-2">Send files directly to other devices. No server required.</p>
+        </header>
+
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Left Column: My Info & Peers -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- My Peer ID -->
+                <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-100">Your Peer ID</h2>
+                    <div class="flex flex-col md:flex-row items-center justify-between bg-gray-900 p-4 rounded-md">
+                        <span id="myPeerIdText" class="text-3xl font-mono tracking-widest text-green-400 mb-4 md:mb-0">----</span>
+                        <button id="copyPeerIdBtn" class="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors">
+                            <svg class="lucide lucide-copy w-5 h-5"><use xlink:href="#copy"></use></svg>
+                            <span>Copy ID</span>
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Available Peers -->
+                <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-100">Available Peers</h2>
+                    <div id="peerList" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- Peer cards will be injected here -->
+                        <p class="text-gray-400 text-center col-span-full">Scanning for peers...</p>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Right Column: Progress -->
+            <div class="lg:col-span-1 space-y-6">
+                <section class="bg-gray-800 p-6 rounded-lg shadow-xl sticky top-8">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-100">File Transfers</h2>
+                    <div id="progressContainer" class="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+                        <!-- Progress cards will be injected here -->
+                        <p class="text-gray-400 text-center">No active transfers.</p>
+                    </div>
+                </section>
+            </div>
+
+        </main>
+    </div>
+    
+    <!-- File Send Modal -->
+    <div id="fileSendModal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4">
+        <!-- Backdrop -->
+        <div id="fileSendModalBackdrop" class="fixed inset-0 bg-black/60 backdrop-blur-sm"></div>
+        
+        <!-- Modal Content -->
+        <div class="relative z-50 bg-gray-800 text-white rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <!-- Header -->
+            <div class="flex items-center justify-between p-5 border-b border-gray-700">
+                <h3 class="text-2xl font-semibold">Send Files</h3>
+                <button id="closeModalBtn" class="p-1 rounded-full text-gray-400 hover:bg-gray-700 hover:text-white">
+                    <svg class="lucide lucide-x w-6 h-6"><use xlink:href="#x"></use></svg>
+                </button>
+            </div>
+            
+            <!-- Body -->
+            <div class="p-6 space-y-6 overflow-y-auto">
+                <!-- Step 1: Select Peers -->
+                <div>
+                    <h4 class="text-lg font-medium mb-3">1. Select Recipients</h4>
+                    <div id="fileSendPeerList" class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-40 overflow-y-auto p-2 bg-gray-900 rounded-md">
+                        <!-- Peer checkboxes will be injected here -->
+                    </div>
+                </div>
+                
+                <!-- Step 2: Select Files -->
+                <div>
+                    <h4 class="text-lg font-medium mb-3">2. Add Files</h4>
+                    <div id="fileDropzone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer transition-colors hover:border-blue-500 hover:bg-gray-700">
+                        <input type="file" id="fileInput" multiple class="hidden">
+                        <label for="fileInput" id="fileInputLabel" class="flex flex-col items-center cursor-pointer">
+                            <svg class="lucide lucide-upload-cloud w-12 h-12 text-gray-500 mb-3"><use xlink:href="#upload-cloud"></use></svg>
+                            <span class="font-medium text-gray-300">Drag & drop files here, or click to select</span>
+                            <span class="text-sm text-gray-400 mt-1">Maximum file size is browser-dependent</span>
+                        </label>
+                    </div>
+                    <div id="fileQueueList" class="mt-4 space-y-2 max-h-40 overflow-y-auto">
+                        <!-- Selected file previews -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="flex items-center justify-end p-5 border-t border-gray-700">
+                <button id="fileSendButton" class="flex items-center space-x-2 bg-green-600 hover:bg-green-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors">
+                    <svg class="lucide lucide-send w-5 h-5"><use xlink:href="#send"></use></svg>
+                    <span>Send Files</span>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+</body>
+</html>
